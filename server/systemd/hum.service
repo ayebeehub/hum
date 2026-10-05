@@ -1,0 +1,36 @@
+[Unit]
+Description=HUM usage endpoint (private tailnet widget)
+After=network-online.target tailscaled.service
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=simple
+User=10000
+Group=10000
+Environment=HUM_BIND_IP=auto
+Environment=HUM_PORT=8765
+Environment=HUM_ITGUY_DB=/opt/data/profiles/itguy/state.db
+Environment=HUM_LEDGER=/var/lib/hum/hum-ledger.sqlite
+Environment=HUM_NORA_EXPORT=/opt/data/hum-export/nora-usage.json
+# Code lives in /opt/hum, NOT under /opt/itguy: /opt/itguy is mode 0750 itguy:itguy,
+# so the service uid cannot traverse into it (systemd would fail with status=200/CHDIR).
+WorkingDirectory=/opt/hum
+ExecStart=/usr/bin/python3 /opt/hum/hum_server.py
+Restart=always
+RestartSec=5
+
+# Least privilege: no capabilities, no access to /home or /root, and the whole
+# filesystem is read-only for this unit except the ledger directory. The source
+# databases are therefore unwritable even though the service uid owns them.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hum
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

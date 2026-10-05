@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>HUM | widget design preview</title>
+<style>
+:root {--green:#0E4D3A;--deep:#0A3A2C;--gold:#C9A227;--white:#F7F5F0;--ink:#1A1A1A;--muted:#B6B7B2;--line:#5C4C1F}
+*{box-sizing:border-box} html,body{margin:0;min-height:100%;} body{background:#28352E;color:var(--white);font-family:Tahoma,Arial,sans-serif} 
+.preview{width:100vw;min-height:100vh;display:grid;place-items:center;background:repeating-linear-gradient(90deg,#253129 0 120px,#26352c 120px 240px)}
+.card{width:350px;height:388px;overflow:hidden;border-radius:12px;background:var(--ink);box-shadow:none;}
+.header{height:39px;background:var(--green);display:flex;align-items:center;justify-content:space-between;padding:0 15px;border-left:4px solid var(--gold)}
+.brand{font-size:10px;font-weight:800;letter-spacing:1.1px}.brand span{color:var(--gold)}.header-right{display:flex;align-items:center;gap:6px}.name{font-size:11px;font-weight:800;letter-spacing:2px;color:var(--white);margin-right:3px}.control{width:22px;height:22px;display:grid;place-items:center;border:1px solid #82A493;border-radius:4px;background:transparent;color:var(--white);font:600 13px/1 Consolas,monospace;cursor:pointer;padding:0}.control:hover{background:var(--deep);border-color:var(--gold)}.control:focus-visible{outline:2px solid var(--gold);outline-offset:2px}.card.minimized{height:39px}.card.minimized .content{display:none}
+.content{padding:12px 15px 12px}.section{border-bottom:1px solid var(--line);padding:0 0 9px;margin-bottom:10px}.section:last-child{border:0;margin-bottom:0;padding-bottom:0}
+.section-title{font-size:10px;font-weight:800;color:var(--gold);letter-spacing:1.4px;margin-bottom:7px;line-height:1.2}
+.today{background:var(--deep);border-radius:6px;padding:7px 9px;display:flex;align-items:baseline;justify-content:space-between;gap:5px}
+.today .counts{font:500 10px/1.4 Consolas,monospace;letter-spacing:-.45px;white-space:nowrap}.today .cost{font:600 15px/1 Consolas,monospace;color:var(--white)}
+.row{padding:4px 0 5px}.row + .row{border-top:1px solid #31342F}
+.row-head{display:flex;align-items:baseline;gap:5px;height:15px}.agent{color:var(--white);font-size:11px;font-weight:700;min-width:37px}.model{color:var(--muted);font:400 9px/1.2 Consolas,monospace;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}.badge{color:var(--gold);font-size:8px;margin-left:auto;white-space:nowrap}
+.metrics{display:flex;align-items:baseline;gap:7px;white-space:nowrap;font:500 10px/1.4 Consolas,monospace;letter-spacing:-.5px}.metrics .cache{color:var(--muted);font-size:9px}.metrics .cost{color:var(--white);margin-left:auto;font-weight:600;font-size:10px}
+.footer{color:var(--muted);font:400 8px/1.2 Consolas,monospace;margin-top:3px}
+</style>
+</head>
+<body><main class="preview"><article class="card" aria-label="HUM desktop widget design preview; illustrative values only">
+<header class="header"><div class="brand">NORA <span>·</span> ITGUY</div><div class="header-right"><div class="name">HUM</div><button class="control" id="minimize" title="Minimize or restore" aria-label="Minimize widget">−</button><button class="control" id="close" title="Quit widget" aria-label="Quit widget">×</button></div></header>
+<div class="content">
+<section class="section"><div class="section-title">TODAY <span style="color:var(--muted);font-size:8px;letter-spacing:0;float:right">SINCE 06:00 IST · GROSS</span></div><div class="today"><div class="counts">in 1.95M · out 344k</div><div class="cost">$3.2100</div></div></section>
+<section class="section"><div class="section-title">THIS SESSION</div>
+<div class="row"><div class="row-head"><b class="agent">Nora</b><span class="model">gpt-6-sol</span><span class="badge">ACTIVE</span></div><div class="metrics"><span>in 199k / out 23.5k</span><span class="cache">cache 6.1M</span><span class="cost">$0.1975</span></div></div>
+<div class="row"><div class="row-head"><b class="agent">ITGuy</b><span class="model">deepseek-v4.1-flash</span><span class="badge">LAST SESSION</span></div><div class="metrics"><span>in 372k / out 63.2k</span><span class="cache">cache 5.1M</span><span class="cost">$0.5637</span></div></div>
+</section>
+<section class="section"><div class="section-title">LAST 24 HOURS</div>
+<div class="row"><div class="row-head"><b class="agent">Nora</b><span class="model">gpt-6-sol</span></div><div class="metrics"><span>in 1.07M / out 180k</span><span class="cache">cache 6.1M</span><span class="cost">$1.1842</span></div></div>
+<div class="row"><div class="row-head"><b class="agent">ITGuy</b><span class="model">deepseek-v4.1-flash</span></div><div class="metrics"><span>in 879k / out 165k</span><span class="cache">cache 5.1M</span><span class="cost">$2.0316</span></div></div>
+</section>
+<div class="footer">UPDATED 14:32 IST  ·  90s refresh  ·  illustrative data</div>
+</div></article></main><script>
+const card = document.querySelector('.card');
+const minimize = document.querySelector('#minimize');
+minimize.addEventListener('click', () => {
+  const collapsed = card.classList.toggle('minimized');
+  minimize.textContent = collapsed ? '+' : '−';
+  minimize.setAttribute('aria-label', collapsed ? 'Restore widget' : 'Minimize widget');
+});
+document.querySelector('#close').addEventListener('click', () => card.remove());
+</script></body></html>

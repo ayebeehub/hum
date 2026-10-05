@@ -1,0 +1,10 @@
+[Unit]
+Description=HUM sampler (keeps the ITGuy ledger covered while the widget is closed)
+After=hum.service
+Requires=hum.service
+
+[Service]
+Type=oneshot
+User=10000
+Group=10000
+ExecStart=/opt/hum/hum_sampler.sh

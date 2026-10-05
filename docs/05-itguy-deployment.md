@@ -1,0 +1,19 @@
+# HUM: ITGuy deployment instructions
+
+**Scope:** ITGuy owns the server-side Tailscale endpoint and its own profile access. Nora has not inspected ITGuy's database or deployed the service. Do not send raw database records, protected data, credentials, or chat metadata to the widget.
+
+1. **Receive and review the package.** AB supplies `HUM-build.zip`. Extract the full `HUM/` folder under an ITGuy-controlled working directory. Read `02-prd.md`, `04-handoff.md`, `usage.py`, and `test_usage.py`. No HTTP service is included yet; implementing the handler is part of your task.
+2. **Run the included tests.** From that `HUM/` directory, run `python3 -m unittest -v test_usage`. The collector uses only Python's standard library. Resolve any local interpreter or path issue before deployment.
+3. **Confirm source paths and permissions.** Discover both live profile DB locations independently; expected paths are `/opt/data/profiles/nora/state.db` and `/opt/data/profiles/itguy/state.db`. Give the service account read-only access to these files and their SQLite sidecars, and write access only to a dedicated, durable HUM ledger directory. Never copy the source DBs into the Rainmeter package.
+4. **Check the emitter.** In your own authorized environment, run:
+
+   `python3 usage.py --nora-db /opt/data/profiles/nora/state.db --itguy-db /opt/data/profiles/itguy/state.db --ledger /PATH/TO/DURABLE/hum-ledger.sqlite --display`
+
+   It should output exactly one JSON object with a `display` array of ten strings. Also run without `--display` to confirm `missing_agents` is empty. The first call only establishes the historical baseline; daily and 24-hour rows initially say `PARTIAL`/warming up.
+5. **Reconcile.** For each agent, compare the sum of `session_model_usage` conversation costs with the `sessions` summary for those same sessions. Account for auxiliary-task costs separately in Today's gross, and never add the session summary to the model-usage rows. Confirm subscription-included calls show $0 incremental USD rather than a fabricated per-call fee.
+6. **Implement the private endpoint.** Serve only `GET /hum`, returning the exact compact UTF-8 payload `json.dumps({'display': render_display(collect(sources, ledger_path))}, separators=(',', ':'), ensure_ascii=False)` with `Content-Type: application/json; charset=utf-8` and `Cache-Control: no-store`. No HTML, BOM, request-body handling, raw records, authentication secrets in the skin, or public routes. Serialize collector calls because the ledger has one writer.
+7. **Keep the ledger covered while the widget is closed.** Run a server-side sampler every 90 seconds, even if Rainmeter is unloaded. Also collect on each GET for freshness, serialized against the timer. Closing HUM unloads the Windows skin; it does not stop this separate server accounting service. Persist and back up the ledger if historical continuity matters.
+8. **Bind and restrict transport.** Bind the listener to the server's Tailscale IP only, not `0.0.0.0` or a public interface. Restrict the port to AB's authorized Windows device using tailnet policy/firewall. Never log response bodies or query results. Arrange service restart on failure under ITGuy's normal deployment practices.
+9. **Verify before handing over the URL.** From an authorized tailnet device, request the endpoint and confirm one `display` array with ten strings, correct content type, no public-interface listener, and fresh changes approximately every 90 seconds. Check that a deliberate temporary outage yields a stale widget state when Windows testing is available. Report the exact private URL and only aggregate reconciliation results to AB; do not send sensitive source records.
+
+**Acceptance boundary:** The server-side implementation, live ITGuy reconciliation, tailnet access control, and runtime checks remain ITGuy-owned. Do not report HUM fully operational until AB completes the Windows acceptance checks.

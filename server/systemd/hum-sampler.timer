@@ -1,0 +1,12 @@
+[Unit]
+Description=Run the HUM sampler every 90 seconds
+
+[Timer]
+OnBootSec=45
+OnUnitActiveSec=90
+AccuracySec=1s
+RandomizedDelaySec=0
+Unit=hum-sampler.service
+
+[Install]
+WantedBy=timers.target
