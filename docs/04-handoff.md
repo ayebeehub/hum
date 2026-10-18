@@ -1,3 +1,14 @@
+> **STATUS — updated 2026-10-17 (ITGuy).** This file is Nora's handover record, preserved as
+> delivered: the "not yet performed" sections below describe the state **at handover**, not today.
+> Every item in them is now complete and verified — the endpoint deployed and serving, the skin
+> installed and rendering on AB's desktop, the `STALE` failure path confirmed by a deliberate
+> 185-second park, and a 22.6-minute sustained refresh soak passed with 44/44 clean polls. For
+> live status see `README.md`, ITGuy's operational runbook, in the same folder. Nothing below is
+> an open item.
+> **Also 2026-10-18 (ITGuy):** the widget footer's permanently-stuck `PARTIAL` flag was a collector
+> bug and is fixed (healthy output is `EST. USD`), and Nora's `reconciliation` now reports `ok` with
+> `difference_usd: 0.0`. See the 2026-10-18 section of `README.md` for both.
+
 # HUM build status and integration handoff
 
 ## Implemented locally

@@ -34,6 +34,55 @@ p='/var/lib/hum/hum-ledger.sqlite'
 print(round(time.time()-os.path.getmtime(p),1) if os.path.exists(p) else 'missing')" 2>&1)"
 
 echo
+echo "=== LEDGER COVERAGE (what makes the footer read PARTIAL) ==="
+python3 - <<'PY' 2>&1
+import sqlite3, time
+from datetime import datetime, timezone
+
+LEDGER = '/var/lib/hum/hum-ledger.sqlite'
+GAP = 180                      # usage.py: any gap > 180s marks the window partial
+IST = 5.5 * 3600
+now = time.time()
+utc = lambda t: datetime.fromtimestamp(t, timezone.utc).strftime('%Y-%m-%d %H:%M:%SZ')
+boundary_today = ((now + IST) // 86400) * 86400 + 6 * 3600 - IST   # 06:00 IST today
+
+try:
+    con = sqlite3.connect('file:%s?mode=ro' % LEDGER, uri=True, timeout=5)
+    con.execute('PRAGMA busy_timeout=5000')
+    agents = [r[0] for r in con.execute('SELECT DISTINCT agent FROM sample ORDER BY agent')]
+except sqlite3.Error as exc:
+    print('ledger unreadable: %s' % exc)
+    raise SystemExit(0)
+
+print('agents sampled in this ledger: %s' % (', '.join(agents) if agents else 'none'))
+print('(Nora is not sampled here by design - her windows come from her export, above)')
+
+for agent in agents:
+    rows = [r[0] for r in con.execute(
+        'SELECT at FROM sample WHERE agent=? AND at<=? ORDER BY at', (agent, now))]
+    if not rows:
+        print('%s: no samples' % agent)
+        continue
+    gaps = [(b - a, a, b) for a, b in zip(rows, rows[1:])]
+    print('')
+    print('%s: first=%s  last=%s  samples=%d' % (agent, utc(rows[0]), utc(rows[-1]), len(rows)))
+    for label, since, clears in (('today', boundary_today, boundary_today + 86400),
+                                 ('24h', now - 86400, None)):
+        holes = [g for g in gaps if g[0] > GAP and g[2] >= since]
+        if rows[0] > since:
+            print('  %-5s PARTIAL - ledger starts after the window opens' % label)
+        elif holes:
+            for length, a, b in holes:
+                print('  %-5s PARTIAL - %ds gap %s -> %s' % (label, length, utc(a), utc(b)))
+            if clears is None:
+                print('  %-5s clears %s' % (label, utc(max(h[2] for h in holes) + 86400)))
+            else:
+                print('  %-5s clears at the next 06:00 IST boundary (%s)' % (label, utc(clears)))
+        else:
+            print('  %-5s OK - fully covered, no gap > %ds' % (label, GAP))
+PY
+
+echo
 echo "=== NORA EXPORT ==="
 python3 -c "
 import json,os,time

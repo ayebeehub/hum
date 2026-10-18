@@ -131,7 +131,12 @@ def collect(sources: dict[str, str], ledger_path: str, now: float | None = None)
                                        AND at<=? AND conversation=1 ORDER BY at DESC,rowid DESC
                                        LIMIT 1''', (name, now-86400, now)).fetchone()
             result['model'] = latest[0] if latest else None
-    missing = [name for name in ('Nora', 'ITGuy') if name not in data]
+    # Only an agent that was REQUESTED but came back empty is missing. Nora is
+    # never requested here by design (her figures come from her published
+    # export, merged in hum_merge.py), so the old hardcoded ('Nora','ITGuy')
+    # tuple marked every payload partial forever.
+    missing = [name for name in ('Nora', 'ITGuy')
+               if name in sources and name not in data]
     gross = {'input_tokens': sum(v['input_tokens'] or 0 for v in today.values())
                               if all(v['input_tokens'] is not None for v in today.values()) else None,
              'output_tokens': sum(v['output_tokens'] or 0 for v in today.values())
