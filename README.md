@@ -15,13 +15,14 @@ feeds it. A short visual walkthrough is in [`docs/widget-note.md`](docs/widget-n
 
 | Path | Contents |
 |---|---|
-| `server/` | The endpoint: `hum_server.py` (HTTP), `hum_merge.py` (merge), `usage.py` (collector), `hum_sampler.sh` |
-| `server/systemd/` | The three units: `hum.service`, `hum-sampler.service`, `hum-sampler.timer` |
+| `server/` | The endpoint: `hum_server.py` (HTTP), `hum_merge.py` (merge), `usage.py` (collector), `hum_sampler.sh`; `hum_billed.py` (provider-billed fetcher, run by its own 5-minute timer) |
+| `server/systemd/` | The five units: `hum.service`, `hum-sampler.service`, `hum-sampler.timer`, `hum-billed.service`, `hum-billed.timer` |
 | `windows/` | `HUM.ini` — the skin, with its endpoint already configured |
 | `docs/` | The handover package: product description, PRD, mockup, handoff, deployment brief, Windows install guide, screenshot |
-| `ops/` | The vetted install/control/observe scripts used on the host |
+| `ops/` | The vetted install/control/observe scripts used on the host, plus `hum_integrity_watchdog.py` — the independent daily check that re-derives the provider's own total and compares it against what the widget actually serves |
 | `nora/` | Nora's publisher and the package's tests |
 | `history/` | Deployment audit for the initial build |
+| `tests/` | The widget's regression suites (`test_billed.py`, `test_mediadup.py`) — run against the live code by the integrity watchdog every Saturday |
 
 ## How it works
 

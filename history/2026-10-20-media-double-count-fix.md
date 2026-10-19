@@ -110,3 +110,32 @@ Restores every `*.pre-mediadup-<stamp>` backup in `/opt/hum` and `/opt/itguy/hum
 `hum-widget-ops` skill (string-1 contract, new pitfalls 14–15, status), its
 `references/billed-display.md` (component rule, account-superset invariant, acceptance tests 6–7,
 rollback), and `/opt/itguy/deployments/hum/README.md` (dated section).
+
+## Follow-up (same day): an independent watchdog
+
+Fixing the display did not fix the *class* of failure. The figures on that widget had only ever
+been compared by a human looking at a dashboard — nothing automated would have caught the bug —
+so the same silent-drift risk remained for an accounting change, a key rotation, or a new bucket
+added on top of the invoice.
+
+Added `ops/hum_integrity_watchdog.py` (agent-side, read-only), running daily at 07:00 IST as a
+`no_agent` cron job — empty stdout when healthy, so it delivers nothing unless something is wrong.
+It does three things:
+
+1. **Display contract.** Fetches the served payload over the tailnet and asserts 10 strings, a
+   `BILLED` string 1 with **no additive term**, a media component `<=` the invoice, per-agent rows
+   that carry a billed figure, no `$0.00` leak, the expected headers, and a footer that is not
+   `EST. USD` (which would mean the billed fetcher had been dead for more than 900 s).
+2. **Independent re-derivation.** Queries the provider for the same 06:00-IST window and compares:
+   the served invoice must never be **ahead** of the provider's own total (the direction that
+   overstates), the account-vs-partitions residual must stay inside the same tolerance the fetcher
+   enforces, the media component must match the provider's image-model rows, and each served
+   per-agent 24 h row is checked against its own partition.
+3. **Regression suites** (`tests/`) against the live code, every Saturday.
+
+It deliberately does **not** import `usage.py` or `hum_merge.py`, so a bug in the widget's own
+arithmetic cannot hide from it. Verified the same day: the exact pre-fix payload
+(`BILLED $14.03 + media $1.71`) is caught as an additive term, a media-over-invoice case and a
+`$0.00`/dead-fetcher case are caught, the failure path renders its alert and exits 0 (rehearsed
+with `rehearse_no_agent_failure.py` and separately against a dead endpoint), and a healthy run
+emits **zero bytes**.
