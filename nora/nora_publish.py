@@ -37,6 +37,11 @@ RECONCILIATION_TOLERANCE_USD = 0.01
 MEDIA_CACHE_TTL_SECONDS = 3600.0
 MEDIA_CACHE_FILENAME = "or-media-cache.json"
 ANALYTICS_URL = "https://openrouter.ai/api/v1/analytics/query"
+# Nora's OpenRouter API key hash, pinned so media generation is attributed to HER
+# key rather than read account-wide. Source of truth: ITGuy's orcost-agents.json
+# (agents.nora.key_hashes). Not a secret (it is a hash, already in that readable
+# config), but it MUST be kept in sync on key rotation or media silently mis-scopes.
+NORA_KEY_HASH = "c65fb7ac655dad776f0001df67e4020a7ec9662139007dbaf9039229c1b9d5e8"
 
 # Model-name markers for OpenRouter generation tools that bill through OpenRouter
 # but are NOT written to state.db's session_model_usage (the DB only logs chat /
@@ -74,8 +79,9 @@ def fetch_media_gen(management_key: str | None, cache_path: str, now: float | No
     """Return media-generation spend (image/video/audio) for today / 24h / lifetime.
 
     Covers OpenRouter generation tools that bypass state.db (image_gen, video_gen, etc.).
-    Account-scoped (analytics requires a management key; no per-key filter exists), so the
-    figure is the whole account's media spend. In practice only Nora generates media.
+    Scoped to Nora's OWN key via the api_key_id filter, so the figure is her media
+    spend, not the whole account's. (Measured 2026-10-20: account-wide media overstates
+    Nora by ~$0.20 today and ~$9.94 lifetime, because other keys also generate media.)
     Cached for MEDIA_CACHE_TTL_SECONDS; analytics data is day-granularity, so a 90s poll
     would return the same numbers every time.
     """
@@ -90,7 +96,7 @@ def fetch_media_gen(management_key: str | None, cache_path: str, now: float | No
         "cost_lifetime": 0.0,
         "as_of": None,
         "cached": False,
-        "account_scoped": True,
+        "key_scoped": True,
         "error": None,
         "fetched_at": now,
     }
@@ -116,6 +122,7 @@ def fetch_media_gen(management_key: str | None, cache_path: str, now: float | No
             "start": start.strftime("%Y-%m-%dT00:00:00Z"),
             "end": end.strftime("%Y-%m-%dT00:00:00Z"),
         },
+        "filters": [{"field": "api_key_id", "operator": "in", "value": [NORA_KEY_HASH]}],
         "limit": 1000,
     }).encode("utf-8")
     request = urllib.request.Request(
@@ -277,7 +284,7 @@ def build_export(nora_db: str, ledger_path: str, now: float | None = None) -> di
             "cost_lifetime_usd": media["cost_lifetime"],
             "as_of": media["as_of"],
             "cached": media["cached"],
-            "account_scoped": media["account_scoped"],
+            "key_scoped": media["key_scoped"],
             "error": media["error"],
         },
     }

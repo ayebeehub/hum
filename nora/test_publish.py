@@ -164,6 +164,16 @@ class PublisherTests(unittest.TestCase):
         self.assertAlmostEqual(export["session"]["cost_usd"], 0.4)
         self.assertEqual(export["session"]["input_tokens"], 110)
 
+    def test_media_gen_is_key_scoped_not_account_scoped(self):
+        # The media figure must be attributed to Nora's own key, not read
+        # account-wide. The export carries key_scoped=True and no account_scoped.
+        self.insert_session()
+        self.insert_usage()
+        export = build_export(self.source, self.ledger, self.now)
+        mg = export["media_gen"]
+        self.assertTrue(mg["key_scoped"])
+        self.assertNotIn("account_scoped", mg)
+
     def test_publish_writes_atomically_readable_json(self):
         self.insert_session()
         self.insert_usage()
