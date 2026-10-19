@@ -15,11 +15,16 @@ Rules:
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime
 
 from usage import IST
 
 STALE_AFTER_SECONDS = 300
+# A billed figure older than this must never masquerade as current. The renderer
+# falls back to the EST. USD display instead — never a silent $0.00.
+BILLED_MAX_AGE_SECONDS = 900
+BILLED_PATH = os.environ.get('HUM_BILLED', '/var/lib/hum/billed.json')
 
 _UNAVAILABLE_SESSION = {'status': 'unavailable', 'model': None, 'input_tokens': None,
                         'output_tokens': None, 'cache_read_tokens': None, 'cost_usd': None}
@@ -49,8 +54,45 @@ def load_nora(path, now=None):
     return export
 
 
-def merge(itguy, nora):
-    """Merge ITGuy's collect() result with Nora's export -> (merged, reconciliation)."""
+def load_billed(path=None, now=None):
+    """Load /var/lib/hum/billed.json written by the hum-billed timer.
+
+    Returns None when the file is absent, malformed or older than
+    BILLED_MAX_AGE_SECONDS. None means "no billed figure available", which the
+    renderer shows as the EST. USD display — a provider outage or a broken timer
+    must degrade to the honest estimate, never to a stale number or $0.00.
+    """
+    if path is None:
+        path = BILLED_PATH
+    if now is None:
+        now = datetime.now(IST).timestamp()
+    try:
+        with open(path, encoding='utf-8') as fh:
+            data = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    if (not isinstance(data, dict) or not isinstance(data.get('account'), dict)
+            or not isinstance(data.get('agents'), dict)):
+        return None
+    try:
+        fetched = datetime.fromisoformat(data['fetched_at']).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return None
+    age = now - fetched
+    if age < 0 or age > BILLED_MAX_AGE_SECONDS:
+        return None
+    data['age_seconds'] = age
+    return data
+
+
+def merge(itguy, nora, billed='auto'):
+    """Merge ITGuy's collect() result with Nora's export -> (merged, reconciliation).
+
+    `billed` is the provider-billed figure set (see load_billed). Pass None to
+    force the estimate-only display; 'auto' (the default) loads it from disk.
+    The provider-billed money and the local estimates are reported side by side
+    and are never summed together.
+    """
     today = dict(itguy['today'])
     itguy_partial = bool(today.get('partial'))
 
@@ -73,10 +115,23 @@ def merge(itguy, nora):
         hours_nora = nora['last_24h']
         updated_at = max(itguy['updated_at'], nora['published_at'])
 
+    if billed == 'auto':
+        billed = load_billed()
+    # Nora's media generation cost. Carried through opaque (like her
+    # reconciliation verdict). MEASURED 2026-10-20: this spend bills to her own
+    # key, so it is ALREADY inside the account total and inside her per-agent
+    # row. It is a component of both, never an addend — the old note claiming it
+    # was "not attributable to a key" is what produced the double count.
+    media = None
+    if isinstance(nora, dict) and isinstance(nora.get('media_gen'), dict):
+        media = nora['media_gen']
+
     merged = {
         'updated_at': updated_at,
         'today': today,
         'session': {'Nora': session_nora, 'ITGuy': itguy['session']['ITGuy']},
         'last_24h': {'Nora': hours_nora, 'ITGuy': itguy['last_24h']['ITGuy']},
+        'billed': billed,
+        'media': media,
     }
     return merged, (nora or {}).get('reconciliation')

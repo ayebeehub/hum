@@ -167,3 +167,39 @@ AB's Windows side: Rainmeter + skin loaded and rendering correctly.
 - `05-itguy-deployment.md` — the server-side brief (data boundary contract)
 - `06-windows-install.md` — AB's Windows installation + acceptance checklist
 - `HUM.ini` — the skin, with `[Variables] Endpoint` set to the live tailnet URL
+
+## 2026-10-20 — string 1 double-counted media (diagnosed, fixed, deployed)
+
+- **Fault:** display string 1 rendered `BILLED $14.02 + media $1.71`. Media spend is **already
+  inside** the account invoice, so the additive form overstated the day by the whole media amount
+  (media billed in 24 h was $4.30, so the error scales with image use).
+- **Measured proof** (provider `/analytics/query`, `dimensions=['model']`, same 06:00-IST window):
+  the image rows `gemini-3-pro-image 1.501922` + `gemini-3.1-flash-image 0.204086` = **1.706008**,
+  identical to Nora's published `media_gen.cost_today_usd` — and they bill to **her** key, so they
+  sit inside both the account total and her per-agent row. Account total =
+  `itguy + nora` exactly, residual `0.000000`.
+- **Change** (3 files, exactly one display string): string 1 → `BILLED $A (incl. media $M)`, shown
+  only when the component is `<=` the invoice; the false `hum_billed.py` note ("media … is NOT
+  included") corrected; **new invariant** — `hum_billed.build()` refuses to publish when the account
+  total is below the sum of the pinned key partitions (`RESIDUAL_TOLERANCE_USD = 0.05`), keeping the
+  previous good `billed.json`.
+- **Verification:** 19/19 new checks + 36/36 pre-existing checks against byte-identical copies of the
+  live code; installer validator proven to reject the old additive payload; installed files hash-match
+  the staged bytes; `MainPID 3555397 → 3591552`, `NRestarts=0`; new fetcher published live at
+  20:39:10Z (`ExecMainStatus=0`, `billed.json` 851 → 1056 bytes); listener tailnet-only; payload 10
+  strings with correct headers.
+- **Installed hashes:** `da110d00…` (usage.py) / `e540858e…` (hum_merge.py) / `dc083fbe…`
+  (hum_billed.py). Payload copies identical.
+- **Rollback baseline:** `*.pre-mediadup-20261019T203403Z` in `/opt/hum` and
+  `/opt/itguy/hum-payload` — verified to hold the exact pre-change bytes
+  (`34150cb3…` / `ddeaa304…` / `2639af50…`).
+- **Deploy path:** `/opt/itguy/temp/hum_stage/mediadup/install_hum_mediadup.sh` (root, idempotent,
+  auto-rollback) — `/opt/hum` is root-owned and `exec_hum_install.sh` only reads
+  `/opt/itguy/hum-payload`, so **every HUM payload change needs one root install step**; there is no
+  self-service path by design.
+- **Why `est` can never equal the invoice (no code change made):** the ~$6.5 day gap decomposes as
+  ~$2.17 ITGuy mispricing (Hermes charges cache reads at $0.0016/M; the endpoints actually serving
+  him — Wafer, DigitalOcean, Together, Morph, InferenceNet — bill prompt tokens at ~$0.018/M whether
+  cached or not), $1.82 benchmark sandbox (`tencent/hy4-preview`), $1.71 media, $0.81 Nora
+  peak-hour uplift. The estimate is a Hermes-side list-price guess; the invoice is the truth.
+- Full record: `/opt/itguy/audit/2026-10-20-hum-media-double-count.md`.

@@ -166,22 +166,92 @@ def _abbr(value):
     return str(value)
 
 
-def _agent_lines(name, row):
-    if row.get('status') == 'unavailable' or row['input_tokens'] is None:
-        return (f'{name} unavailable', 'in ... / out ...  cache ...  $...')
-    model = re.sub(r'[^A-Za-z0-9._:-]', '?',
-                   (row['model'] or 'unknown').split('/')[-1])[:22]
+def _money(value):
+    """Compact 2dp money for provider-billed figures."""
+    return f'${value:,.2f}'
+
+
+def _billed_cost(billed, agent, window):
+    """Provider-billed USD for a window; agent None means the account total.
+
+    Returns None when the figure is not present, which the caller renders as the
+    estimate path rather than as $0.00.
+    """
+    try:
+        if agent is None:
+            return float(billed['account'][window]['cost_usd'])
+        return float(billed['agents'][agent][window]['cost_usd'])
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _media_cost(media, window):
+    """Nora's account-scoped media generation spend for a window, or None."""
+    key = 'cost_today_usd' if window == 'today' else 'cost_24h_usd'
+    try:
+        value = media[key]
+    except (KeyError, TypeError):
+        return None
+    return float(value) if isinstance(value, (int, float)) else None
+
+
+def _agent_lines(name, row, billed=None):
+    """Title + figures for one agent row.
+
+    Without `billed` this is byte-for-byte the historical estimate render. With a
+    billed amount the money line shows provider-billed USD beside the local
+    estimate — the two are displayed together and never summed.
+    """
+    unavailable = row.get('status') == 'unavailable' or row['input_tokens'] is None
     label = row.get('status', '')
-    title = f'{name}  {model}  {label.upper()}' if label else f'{name}  {model}'
+    if unavailable:
+        title = f'{name} unavailable'
+    else:
+        model = re.sub(r'[^A-Za-z0-9._:-]', '?',
+                       (row['model'] or 'unknown').split('/')[-1])[:22]
+        title = f'{name}  {model}  {label.upper()}' if label else f'{name}  {model}'
+    if billed is not None:
+        figures = f'billed {_money(billed)}'
+        if not unavailable and row['cost_usd'] is not None:
+            figures += f'  ·  est {_money(row["cost_usd"])}'
+        return title, figures
+    if unavailable:
+        return title, 'in ... / out ...  cache ...  $...'
     figures = (f'in {_abbr(row["input_tokens"])} / out {_abbr(row["output_tokens"])}'
                f'  cache {_abbr(row["cache_read_tokens"])}  ${row["cost_usd"]:.4f}')
     return title, figures
 
 
 def render_display(data):
-    """Ten strings in a fixed order for Rainmeter WebParser; never include session metadata."""
+    """Ten strings in a fixed order for Rainmeter WebParser; never include session metadata.
+
+    String 1 is the today gross line. When a fresh provider-billed set is
+    available it leads with BILLED and keeps the local estimate visible as `est`;
+    without one, this is exactly the historical estimate-only render, so a
+    provider or timer failure degrades to the old display rather than to $0.00.
+    """
     today = data['today']
-    if today['cost_usd'] is None:
+    billed = data.get('billed') if isinstance(data.get('billed'), dict) else None
+    media = data.get('media') if isinstance(data.get('media'), dict) else None
+
+    billed_today = _billed_cost(billed, None, 'today') if billed else None
+    media_today = _media_cost(media, 'today')
+    if billed_today is not None:
+        line = f'BILLED {_money(billed_today)}'
+        # Nora's media generation spend is ALREADY INSIDE the account total that
+        # _billed_cost() just returned — it is not a separate bucket. Measured
+        # 2026-10-20 against the provider: the two image-model rows billed to her
+        # key ($1.501922 gemini-3-pro-image + $0.204086 gemini-3.1-flash-image)
+        # equal her published media figure ($1.706008) to the cent, and the
+        # account total equals the sum of the pinned key partitions exactly. So
+        # media is a COMPONENT of this invoice, never an addend: the old
+        # '+ media $X' form overstated the day by the whole media amount. Only
+        # shown when it is genuinely a subset of the parent figure.
+        if media_today is not None and media_today <= billed_today:
+            line += f' (incl. media {_money(media_today)})'
+        if today['cost_usd'] is not None:
+            line += f'  ·  est {_money(today["cost_usd"])}'
+    elif today['cost_usd'] is None:
         line = 'in ... / out ...  $...  warming up'
     else:
         line = (f'in {_abbr(today["input_tokens"])} / out {_abbr(today["output_tokens"])}'
@@ -190,13 +260,26 @@ def render_display(data):
     for section in ('session', 'last_24h'):
         for name in ('Nora', 'ITGuy'):
             row = data[section][name]
-            if section == 'last_24h' and row['input_tokens'] is None:
+            # Provider-billed money wins the 24h rows when it is available: the
+            # per-agent invoice is the figure AB actually needs there.
+            agent_billed = (_billed_cost(billed, name.lower(), 'last_24h')
+                            if (section == 'last_24h' and billed) else None)
+            if agent_billed is not None:
+                lines.extend(_agent_lines(name, row, billed=agent_billed))
+            elif section == 'last_24h' and row['input_tokens'] is None:
                 lines.extend((f'{name}  warming up', 'in ... / out ...  cache ...  $...'))
             else:
                 lines.extend(_agent_lines(name, row))
     stamp = datetime.fromisoformat(data['updated_at']).strftime('%H:%M IST')
     partial = any(x['partial'] for x in data['last_24h'].values()) or today['partial']
-    lines.append(f'UPDATED {stamp}  ·  90s  ·  ' + ('PARTIAL' if partial else 'EST. USD'))
+    if partial:
+        verdict = 'PARTIAL'
+    elif billed_today is not None:
+        # The leading figure is a provider invoice, not a local estimate.
+        verdict = 'BILLED'
+    else:
+        verdict = 'EST. USD'
+    lines.append(f'UPDATED {stamp}  ·  90s  ·  ' + verdict)
     return lines
 
 

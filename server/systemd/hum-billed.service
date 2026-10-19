@@ -1,0 +1,23 @@
+[Unit]
+Description=HUM billed-cost fetcher (read-only OpenRouter query -> /var/lib/hum/billed.json)
+Documentation=https://github.com/ayebeehub/hum
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=10000
+Group=10000
+ExecStart=/usr/bin/python3 /opt/hum/hum_billed.py --if-stale 240
+
+# Same least-privilege shape as hum.service. The fetcher reads the profile
+# credential and the pinned key map read-only, and writes ONLY the billed file.
+# It never touches the ledger or a profile database.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/hum
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
