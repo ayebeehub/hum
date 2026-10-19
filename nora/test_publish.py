@@ -72,14 +72,13 @@ class PublisherTests(unittest.TestCase):
         self.assertEqual(export["refresh_seconds"], 90)
         self.assertEqual(set(export), {"agent", "published_at", "refresh_seconds",
                                        "partial", "today", "session", "last_24h",
-                                       "reconciliation"})
+                                       "reconciliation", "media_gen"})
         self.assertEqual(set(export["session"]),
                          {"status", "model", "input_tokens", "output_tokens",
                           "cache_read_tokens", "cost_usd"})
         self.assertEqual(set(export["reconciliation"]),
-                         {"status", "model_usage_total_cost_usd",
-                          "model_usage_conversation_cost_usd",
-                          "session_summary_cost_usd", "difference_usd", "checked_at"})
+                         {"status", "total_cost_usd", "session_summary_cost_usd",
+                          "auxiliary_cost_usd", "difference_usd", "checked_at"})
 
     def test_export_json_leaks_no_private_metadata(self):
         self.insert_session()
@@ -131,7 +130,39 @@ class PublisherTests(unittest.TestCase):
                      "cost_status": "included"}]
         out = reconcile(rows, sessions, "t")
         self.assertEqual(out["status"], "ok")
-        self.assertEqual(out["model_usage_conversation_cost_usd"], 0.0)
+        self.assertEqual(out["session_summary_cost_usd"], 0.0)
+        self.assertEqual(out["total_cost_usd"], 0.0)
+
+    def test_reconcile_auxiliary_rows_do_not_force_mismatch(self):
+        # A settled conversation row plus a NULL-status auxiliary task row. The
+        # aux row is tracked and folded into total_cost_usd, but it must NOT
+        # drive the ok/mismatch status (the old invariant did, permanently).
+        rows = [
+            {"session_id": "a", "model": "m", "task": "", "cost_status": "estimated",
+             "actual_cost_usd": 0.0, "estimated_cost_usd": 0.5},
+            {"session_id": "a", "model": "m", "task": "background_review",
+             "cost_status": None, "actual_cost_usd": 0.0, "estimated_cost_usd": 0.2},
+        ]
+        sessions = [{"id": "a", "actual_cost_usd": 0.0, "estimated_cost_usd": 0.5,
+                     "cost_status": "estimated"}]
+        out = reconcile(rows, sessions, "t")
+        self.assertEqual(out["status"], "ok")
+        self.assertAlmostEqual(out["session_summary_cost_usd"], 0.5)
+        self.assertAlmostEqual(out["auxiliary_cost_usd"], 0.2)
+        self.assertAlmostEqual(out["total_cost_usd"], 0.7)
+        self.assertAlmostEqual(out["difference_usd"], 0.0)
+
+    def test_session_cost_folds_in_auxiliary_rows(self):
+        # The widget's "this session" figure is consolidated: conversation plus
+        # the session's own auxiliary task rows, not conversation alone.
+        self.insert_session(sid="live", estimated=0.3)
+        self.insert_usage(sid="live", model="gpt-6-sol", task="", estimated=0.3,
+                          status="estimated", ins=100, outs=20)
+        self.insert_usage(sid="live", model="gpt-6-sol", task="title_generation",
+                          estimated=0.1, status=None, ins=10, outs=2)
+        export = build_export(self.source, self.ledger, self.now)
+        self.assertAlmostEqual(export["session"]["cost_usd"], 0.4)
+        self.assertEqual(export["session"]["input_tokens"], 110)
 
     def test_publish_writes_atomically_readable_json(self):
         self.insert_session()

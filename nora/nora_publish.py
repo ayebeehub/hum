@@ -16,6 +16,8 @@ import os
 import sqlite3
 import sys
 import tempfile
+import time
+import urllib.request
 from contextlib import closing
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -24,7 +26,6 @@ from usage import (
     IST,
     _baseline_and_deltas,
     _cost,
-    _is_conversation,
     _read_agent,
     _session,
     _window,
@@ -33,6 +34,136 @@ from usage import (
 AGENT = "Nora"
 REFRESH_SECONDS = 90
 RECONCILIATION_TOLERANCE_USD = 0.01
+MEDIA_CACHE_TTL_SECONDS = 3600.0
+MEDIA_CACHE_FILENAME = "or-media-cache.json"
+ANALYTICS_URL = "https://openrouter.ai/api/v1/analytics/query"
+
+# Model-name markers for OpenRouter generation tools that bill through OpenRouter
+# but are NOT written to state.db's session_model_usage (the DB only logs chat /
+# vision / aux completion calls). These are generation families, kept specific so a
+# text or vision model can't false-positive. Extend when a new generation model lands.
+_MEDIA_MODEL_MARKERS = (
+    # image generation
+    "image", "flux", "sdxl", "dalle", "ideogram", "recraft", "imagen", "midjourney",
+    "gpt-image", "nano-banana", "wanx",
+    # video generation
+    "veo", "sora", "kling", "runway", "wan", "pika", "luma", "hailuo",
+    "minimax-video", "seedance", "cogvideo", "genvideo",
+    # audio / music / speech generation
+    "suno", "udio", "music", "tts-1", "speech", "elevenlabs", "audiocraft",
+)
+
+
+def _read_management_key() -> str | None:
+    """Return the OpenRouter management key from the environment, never logged.
+
+    Read from env only (the cron shell script exports it). Unit tests stay
+    hermetic: no env var means no key, so fetch_media_gen short-circuits to an
+    error stub and never touches the network.
+    """
+    key = os.environ.get("OR_MANAGEMENT")
+    return key.strip() or None if key else None
+
+
+def _is_media_model(model: str) -> bool:
+    m = (model or "").lower()
+    return any(marker in m for marker in _MEDIA_MODEL_MARKERS)
+
+
+def fetch_media_gen(management_key: str | None, cache_path: str, now: float | None = None) -> dict:
+    """Return media-generation spend (image/video/audio) for today / 24h / lifetime.
+
+    Covers OpenRouter generation tools that bypass state.db (image_gen, video_gen, etc.).
+    Account-scoped (analytics requires a management key; no per-key filter exists), so the
+    figure is the whole account's media spend. In practice only Nora generates media.
+    Cached for MEDIA_CACHE_TTL_SECONDS; analytics data is day-granularity, so a 90s poll
+    would return the same numbers every time.
+    """
+    now = now or time.time()
+    end = datetime.fromtimestamp(now, ZoneInfo("UTC")).replace(
+        hour=0, minute=0, second=0, microsecond=0
+    ) + timedelta(days=1)
+    start = end - timedelta(days=367)
+    stub = {
+        "cost_today": 0.0,
+        "cost_24h": 0.0,
+        "cost_lifetime": 0.0,
+        "as_of": None,
+        "cached": False,
+        "account_scoped": True,
+        "error": None,
+        "fetched_at": now,
+    }
+    if cache_path:
+        try:
+            with open(cache_path, encoding="utf-8") as fh:
+                cached = json.load(fh)
+            if (now - cached.get("fetched_at", 0) < MEDIA_CACHE_TTL_SECONDS
+                    and cached.get("key_hint") == (management_key or "")[:8]):
+                cached["cached"] = True
+                return cached
+        except (OSError, ValueError):
+            pass
+    if not management_key:
+        stub["error"] = "missing management key"
+        return stub
+
+    payload = json.dumps({
+        "metrics": ["total_usage"],
+        "dimensions": ["model"],
+        "granularity": "day",
+        "time_range": {
+            "start": start.strftime("%Y-%m-%dT00:00:00Z"),
+            "end": end.strftime("%Y-%m-%dT00:00:00Z"),
+        },
+        "limit": 1000,
+    }).encode("utf-8")
+    request = urllib.request.Request(
+        ANALYTICS_URL,
+        data=payload,
+        headers={
+            "Authorization": "Bearer " + management_key,
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as resp:
+            data = json.load(resp)
+    except Exception as exc:  # network/HTTP — fall back to stale/zero, never fail publish
+        stub["error"] = "fetch: %s" % exc
+        return stub
+
+    rows = data.get("data", {}).get("data", [])
+    today_key = (end - timedelta(days=1)).strftime("%Y-%m-%d")
+    yesterday_key = (end - timedelta(days=2)).strftime("%Y-%m-%d")
+    cost_today = cost_24h = cost_lifetime = 0.0
+    for row in rows:
+        if not _is_media_model(row.get("model") or ""):
+            continue
+        usage = float(row.get("total_usage") or 0.0)
+        day = row.get("date__day")
+        cost_lifetime += usage
+        if day == today_key:
+            cost_today += usage
+        if day in (today_key, yesterday_key):
+            cost_24h += usage
+    stub.update({
+        "cost_today": round(cost_today, 8),
+        "cost_24h": round(cost_24h, 8),
+        "cost_lifetime": round(cost_lifetime, 8),
+        "as_of": datetime.fromtimestamp(now, ZoneInfo("UTC")).isoformat(),
+        "fetched_at": now,
+        "key_hint": management_key[:8],
+        "error": None,
+    })
+    if cache_path:
+        try:
+            with open(cache_path, "w", encoding="utf-8") as fh:
+                json.dump(stub, fh, separators=(",", ":"))
+        except OSError:
+            pass
+    return stub
 
 LEDGER_SCHEMA = '''
 CREATE TABLE IF NOT EXISTS snapshot(
@@ -57,28 +188,36 @@ def _read_sessions_cost(path: str):
 def reconcile(usage_rows, session_cost_rows, checked_at):
     """Verify the collector's cost basis against the authoritative sessions summary.
 
-    The fundamental invariant: total cost across all `session_model_usage` rows
-    should equal the total cost in the `sessions` table, since both record the
-    same spend at two granularities. Status is driven by that total-vs-total
-    check, so a mismatch means real attribution drift (e.g. unbilled rows whose
-    `cost_status` is still NULL), not a scoping difference. Conversation-only
-    cost is reported alongside as context, since that is what the widget shows.
+    The `sessions` summary is authoritative for settled cost: it records each
+    session's billed conversation/chat cost, and its total must equal the sum of
+    `session_model_usage` rows whose `cost_status` is set (estimated / actual /
+    included) — those are the settled rows. Rows whose `cost_status` is NULL are
+    auxiliary task charges (background_review, title_generation, approval,
+    vision, image_generation, compression) that carry an estimate but are never
+    rolled into any session's summary. They are tracked and folded into a single
+    consolidated total instead of feeding the ok/mismatch check, which previously
+    forced a permanent `mismatch` (the NULL auxiliary delta reported a growing
+    nonzero difference every publish).
+
+    Status is driven by the settled-rows-vs-summary check; `difference_usd` is
+    that drift. `total_cost_usd` is the consolidated figure AB tracks
+    (summary + auxiliary).
     """
-    total_usage = sum(_cost(r) for r in usage_rows)
     total_summary = sum(_cost(s) for s in session_cost_rows)
-    conv_usage = sum(_cost(r) for r in usage_rows if _is_conversation(r))
+    settled_usage = sum(_cost(r) for r in usage_rows if r["cost_status"] is not None)
+    auxiliary = sum(_cost(r) for r in usage_rows if r["cost_status"] is None)
     if not usage_rows:
         status = "unavailable"
-    elif abs(total_usage - total_summary) <= RECONCILIATION_TOLERANCE_USD:
+    elif abs(settled_usage - total_summary) <= RECONCILIATION_TOLERANCE_USD:
         status = "ok"
     else:
         status = "mismatch"
     return {
         "status": status,
-        "model_usage_total_cost_usd": round(total_usage, 8),
-        "model_usage_conversation_cost_usd": round(conv_usage, 8),
+        "total_cost_usd": round(total_summary + auxiliary, 8),
         "session_summary_cost_usd": round(total_summary, 8),
-        "difference_usd": round(total_usage - total_summary, 8),
+        "auxiliary_cost_usd": round(auxiliary, 8),
+        "difference_usd": round(settled_usage - total_summary, 8),
         "checked_at": checked_at,
     }
 
@@ -102,7 +241,7 @@ def build_export(nora_db: str, ledger_path: str, now: float | None = None) -> di
         if last is None or now > last:
             _baseline_and_deltas(ledger, AGENT, rows, now, initial=last is None)
         today = _window(ledger, AGENT, boundary.timestamp(), now)
-        hours = _window(ledger, AGENT, now - 86400, now, conversation_only=True)
+        hours = _window(ledger, AGENT, now - 86400, now)
         latest = ledger.execute(
             "SELECT model FROM event WHERE agent=? AND at>=? AND at<=? "
             "AND conversation=1 ORDER BY at DESC,rowid DESC LIMIT 1",
@@ -110,10 +249,18 @@ def build_export(nora_db: str, ledger_path: str, now: float | None = None) -> di
         ).fetchone()
         hours["model"] = latest[0] if latest else None
 
-    session = _session(sessions, rows, now)
+    session = _session(sessions, rows, now, gross=True)
     reconciliation = reconcile(
         rows, _read_sessions_cost(nora_db), datetime.fromtimestamp(now, IST).isoformat()
     )
+
+    cache_dir = os.path.dirname(os.path.abspath(ledger_path) or ".")
+    media = fetch_media_gen(_read_management_key(), os.path.join(cache_dir, MEDIA_CACHE_FILENAME), now=now)
+    if media.get("error") is None and media.get("cost_today") is not None:
+        if today.get("cost_usd") is not None:
+            today["cost_usd"] = round(today["cost_usd"] + media["cost_today"], 8)
+        if hours.get("cost_usd") is not None:
+            hours["cost_usd"] = round(hours["cost_usd"] + media["cost_24h"], 8)
 
     return {
         "agent": AGENT,
@@ -124,6 +271,15 @@ def build_export(nora_db: str, ledger_path: str, now: float | None = None) -> di
         "session": session,
         "last_24h": hours,
         "reconciliation": reconciliation,
+        "media_gen": {
+            "cost_today_usd": media["cost_today"],
+            "cost_24h_usd": media["cost_24h"],
+            "cost_lifetime_usd": media["cost_lifetime"],
+            "as_of": media["as_of"],
+            "cached": media["cached"],
+            "account_scoped": media["account_scoped"],
+            "error": media["error"],
+        },
     }
 
 
