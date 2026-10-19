@@ -267,8 +267,9 @@ file. She delivered it as kanban card `t_5a075dbb` (board `ab-interagent`).
   exists or is needed.
 - **Still open, by decision not oversight:** `nora/` ships no `usage.py` (her publisher needs
   `_session(gross=True)`, absent from `server/usage.py`), so that directory is a reference copy, not a
-  runnable unit; `07-nora-instructions.md` is still **not in the repo** (local only); and
-  `NORA_KEY_HASH` now exists in two places, so a key rotation must update both.
+  runnable unit; and `NORA_KEY_HASH` now exists in two places, so a key rotation must update both.
+  (`07-nora-instructions.md` was local-only when this section was first written and **is now in the
+  package** — commit `cdb5400`, alongside this re-synced runbook.)
 - Full record: `/opt/itguy/audit/2026-10-20-hum-mirror-key-scoped-sync.md`.
 
 **Lesson worth keeping:** a completed card is not the end of the thread. Nora posted a superseding
