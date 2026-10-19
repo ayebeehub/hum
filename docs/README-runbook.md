@@ -167,6 +167,10 @@ AB's Windows side: Rainmeter + skin loaded and rendering correctly.
 - `05-itguy-deployment.md` — the server-side brief (data boundary contract)
 - `06-windows-install.md` — AB's Windows installation + acceptance checklist
 - `HUM.ini` — the skin, with `[Variables] Endpoint` set to the live tailnet URL
+- `07-nora-instructions.md` — **standing instructions for Nora**: the export contract, the money
+  rules, how to triage an alert, and the mirror-accuracy item (closed 2026-10-20)
+- `NORA-CHANGENOTE-2026-10-20-media-fix.md` — the same-day change note handed to her (history; the
+  standing document above supersedes it)
 
 ## 2026-10-20 — string 1 double-counted media (diagnosed, fixed, deployed)
 
@@ -203,3 +207,71 @@ AB's Windows side: Rainmeter + skin loaded and rendering correctly.
   cached or not), $1.82 benchmark sandbox (`tencent/hy4-preview`), $1.71 media, $0.81 Nora
   peak-hour uplift. The estimate is a Hermes-side list-price guess; the invoice is the truth.
 - Full record: `/opt/itguy/audit/2026-10-20-hum-media-double-count.md`.
+
+## 2026-10-20 (later) — integrity watchdog added
+
+`/opt/data/profiles/itguy/scripts/hum_integrity_watchdog.py` — read-only, agent-side, no LLM.
+Cron job **HUM Integrity Watchdog** (`0d3d78e3ec5d`, daily **07:00 IST**, `no_agent`, delivers to the
+Telegram DM).
+
+- **Silent when healthy**: empty stdout delivers nothing. A failure prints an alert block containing the
+  served payload, each failed check, and the figures it re-derived independently.
+- **Display contract**: 10 strings; `BILLED` string 1 with **no additive term**; media component `<=`
+  the invoice; both per-agent rows carrying a billed figure; no `$0.00` leak; expected headers; footer
+  not `EST. USD` (which would mean the billed fetcher had been dead for more than 900 s).
+- **Independent re-derivation**: the provider's account total, per-key partitions and image-model rows
+  for the same 06:00-IST window, compared against what is served. The served invoice must never be
+  **ahead** of the provider total (the direction that overstates the day); the account-vs-partitions
+  residual must stay inside the tolerance the fetcher itself enforces. It does NOT import
+  `usage.py`/`hum_merge.py` — an arithmetic bug in the widget cannot hide from it.
+- **Regression suites**: `/opt/itguy/deployments/hum/tests/` on the host (mirrored in the repo as
+  `tests/`) run against the live code on **Saturdays** — 19 + 36 checks.
+
+**Why it exists:** the media double-count above was only ever caught by a human comparing the widget to
+the provider dashboard. Nothing automated compared those numbers, so this job does, daily.
+
+```bash
+# manual full report
+python3 /opt/data/profiles/itguy/scripts/hum_integrity_watchdog.py --always --with-suites
+# prove the failure path renders (read-only script only)
+python3 /opt/data/profiles/itguy/skills/infrastructure/itguy-infrastructure-ops/scripts/rehearse_no_agent_failure.py \
+  /opt/data/profiles/itguy/scripts/hum_integrity_watchdog.py --func live_check \
+  --status "endpoint returned HTTP 503" --http 503 --body '{}' --expect "HUM INTEGRITY FAILURE"
+```
+
+Verified same day: the exact pre-fix payload (`BILLED $14.03 + media $1.71`) is reported as an additive
+term; a media-over-invoice case and a `$0.00` + dead-fetcher case are caught; a healthy run emits
+**0 bytes**; a dead-endpoint run emits 536 bytes of alert and exits 0.
+
+## 2026-10-20 (later still) — package mirror synced to Nora's live publisher, twice
+
+The package copy of `nora_publish.py` had drifted: no `media_gen` block, and the pre-2026-10-18
+reconciliation field names. Doc 07 §7 recorded it as the one open item and asked Nora for her current
+file. She delivered it as kanban card `t_5a075dbb` (board `ab-interagent`).
+
+- **Pass 1 — 04:43 IST, commit `fe0928b`.** Card worker verified the attachment was byte-identical to
+  her live publisher and pushed `nora/nora_publish.py` `a7d907cd…` (12,601 B) plus
+  `nora/test_publish.py` `215ce4be…` (the old mirror test failed 2/9 against the new publisher).
+- **Pass 2 — 04:55 IST, commit `8cd5761`.** Six minutes after that card closed, Nora commented on it
+  with a *superseding* file: `7f1e0590…` (13,172 B), which pins `NORA_KEY_HASH` and filters
+  `/analytics/query` by `api_key_id`, so `media_gen` is her key's spend rather than the account's.
+  Before the fix, account-wide media overstated her by **~$0.20 that day and ~$9.94 lifetime**; her
+  export field changed `account_scoped` → `key_scoped`, and today's media component fell $3.35 → $3.15.
+  `nora/test_publish.py` moved to `8107c2df…` with one added test.
+- **No server change was needed for either pass.** Nothing on this side reads `account_scoped` /
+  `key_scoped` — `hum_merge` passes `media_gen` through opaquely and the watchdog reads only the USD
+  fields. Live payload and `MainPID` were unaffected.
+- **Verified from a fresh clone, both passes:** repo private, `commits/main` == local HEAD, 37 blobs ==
+  37 tracked files, and the two `nora/` files byte-identical to her live copies. Pass 2: 12/12 tests.
+- **Rollback:** `git revert 8cd5761` (previous bytes recoverable from `fe0928b`). No host rollback
+  exists or is needed.
+- **Still open, by decision not oversight:** `nora/` ships no `usage.py` (her publisher needs
+  `_session(gross=True)`, absent from `server/usage.py`), so that directory is a reference copy, not a
+  runnable unit; `07-nora-instructions.md` is still **not in the repo** (local only); and
+  `NORA_KEY_HASH` now exists in two places, so a key rotation must update both.
+- Full record: `/opt/itguy/audit/2026-10-20-hum-mirror-key-scoped-sync.md`.
+
+**Lesson worth keeping:** a completed card is not the end of the thread. Nora posted a superseding
+file on a card that was already `done`, and nothing watching the board would have noticed — the mirror
+sat stale for 12 minutes and would have stayed stale. Re-read a card's comments before declaring a
+mirror current, and treat "done" as the state of the work, not of the artifact.
