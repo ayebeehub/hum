@@ -217,15 +217,22 @@ Telegram DM).
 - **Silent when healthy**: empty stdout delivers nothing. A failure prints an alert block containing the
   served payload, each failed check, and the figures it re-derived independently.
 - **Display contract**: 10 strings; `BILLED` string 1 with **no additive term**; media component `<=`
-  the invoice; both per-agent rows carrying a billed figure; no `$0.00` leak; expected headers; footer
+  the invoice; both per-agent rows carrying a billed figure; expected headers; footer
   not `EST. USD` (which would mean the billed fetcher had been dead for more than 900 s).
+- **The zero rule** (2026-10-21): a served `$0.00` is a failure **only while the provider reports
+  otherwise** for the same window — the invoice is compared against the account total, each agent row
+  against its own key partition. Zeros the provider corroborates are legitimate (a window that just
+  rolled over at 06:00 IST, an agent idle for 24 h) and the report says so explicitly. The media
+  component is exempt: it is judged by a proportional drift check, and `media $0.00` is the normal
+  state of a day with no image generation. With the provider unreachable the rule **abstains** rather
+  than guessing — a check that cannot see the money must not judge it.
 - **Independent re-derivation**: the provider's account total, per-key partitions and image-model rows
   for the same 06:00-IST window, compared against what is served. The served invoice must never be
   **ahead** of the provider total (the direction that overstates the day); the account-vs-partitions
   residual must stay inside the tolerance the fetcher itself enforces. It does NOT import
   `usage.py`/`hum_merge.py` — an arithmetic bug in the widget cannot hide from it.
 - **Regression suites**: `/opt/itguy/deployments/hum/tests/` on the host (mirrored in the repo as
-  `tests/`) run against the live code on **Saturdays** — 19 + 36 checks.
+  `tests/`) run against the live code on **Saturdays** — 19 + 36 + 12 checks.
 
 **Why it exists:** the media double-count above was only ever caught by a human comparing the widget to
 the provider dashboard. Nothing automated compared those numbers, so this job does, daily.
@@ -276,3 +283,37 @@ file. She delivered it as kanban card `t_5a075dbb` (board `ab-interagent`).
 file on a card that was already `done`, and nothing watching the board would have noticed — the mirror
 sat stale for 12 minutes and would have stayed stale. Re-read a card's comments before declaring a
 mirror current, and treat "done" as the state of the work, not of the artifact.
+
+## 2026-10-21 — the watchdog's `$0.00` check replaced with a parsed comparison
+
+The 07:00 IST run alerted on a **healthy** widget: two checks failed (string 1 `BILLED $0.00 (incl.
+media $0.00)` and string 9 `billed $0.00`). The widget was right on both counts — the alert's own
+re-derivation printed the refutation next to the complaint (`provider account today $0.000000`,
+`key partitions $0.000000 (residual 0.000000)`, `ITGuy 24h row $0.00 vs partition $0.000000`). Two
+independent faults in one line of `check_display`:
+
+1. `if '$0.00' in text:` — a **substring** test over all ten strings. It fired on the legitimate
+   `(incl. media $0.00)` of a day with no image generation, i.e. on the media *component* rather than
+   on the invoice it was meant to protect.
+2. A genuinely zero window was treated as a fault. 06:00 IST had just rolled over and ITGuy had been
+   idle ~24 h, so `$0.00` was the true figure, not a degraded render.
+
+- **Fix**: every money field is now **parsed** and compared against the provider's own figure for the
+  same window (the zero rule above). `check_display` takes `provider=` and is called after the
+  re-derivation instead of before it. Legitimate zeros are reported as such
+  (`zero invoice: served $0.00 and provider $0.000000 — nothing billed in this window yet`).
+- **New suite** `tests/test_watchdog.py` (12 checks) — the test whose absence let a substring test
+  ship. It pins the false positive, the genuine-zero case, both real-fault directions, the
+  sub-half-cent residue case, the provider-unavailable abstention, the surviving contract checks, and
+  the **07:00 alert payload verbatim as an acceptance case**. Against the pre-fix code it fails 8/12,
+  reproducing the alert text exactly; against the fixed code it passes 12/12.
+- **Wired into `run_suites()`**, which now copies the watchdog module alongside the suites so the file
+  under test is the one being exercised.
+- **Verified on the live stack**: `--always --with-suites` → `test_watchdog.py: 12 checks, 12 passed,
+  0 failed`, no zero-rule failures on a healthy payload.
+- **Rollback**: `git revert` of the commit below; the pre-fix file is `ops/hum_integrity_watchdog.py`
+  at `02053e4`.
+- **Open, needs a decision:** `test_mediadup.py` (the *other* suite) still fails 1/19 for the same
+  class of reason — its check `0 < media_today <= acct_today` asserts media must be **positive**, so a
+  day with no image generation fails it. Same bug, different file; not fixed here because it was not
+  the approved change.

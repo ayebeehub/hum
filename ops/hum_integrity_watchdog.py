@@ -67,6 +67,8 @@ SERVED_AHEAD_TOLERANCE_USD = 0.01  # the served invoice must never exceed the pr
 SERVED_STALE_MAX_USD = 5.00        # a served invoice this far behind is a stale/broken fetch
 MEDIA_TOLERANCE_USD = 0.25         # served media vs media re-derived from provider rows
 AGENT_ROW_TOLERANCE_USD = 2.00     # served per-agent 24h row vs the re-derived partition
+ZERO_EPSILON_USD = 0.005           # below half a cent the display cannot show it; see
+                                   # the zero rule in check_display
 
 # `BILLED $16.30 (incl. media $1.71)  ·  est $7.26`
 INVOICE_RE = re.compile(
@@ -177,8 +179,19 @@ def live_check():
     return 'ok', http, {'payload': payload, 'headers': headers}
 
 
-def check_display(display, headers) -> list:
-    """Pure display-contract check. Returns a list of failure sentences."""
+def check_display(display, headers, provider=None) -> list:
+    """Pure display-contract check. Returns a list of failure sentences.
+
+    ZERO RULE (2026-10-21). A served `$0.00` is only a fault when the money it claims to
+    summarise is NOT zero. The predecessor of this function asked `'$0.00' in text`, which
+    fired on any row containing a zero — including the legitimate `(incl. media $0.00)` of a
+    day with no image generation — and it had no way to tell a genuine zero (an agent idle
+    for 24h, or a window that just rolled over at 06:00 IST) from a degraded render. It
+    false-alarmed twice on a healthy widget. So each money field is now PARSED and compared
+    against the provider's own figure for the same window: zero is a failure only while the
+    provider says otherwise. `provider=None` (unavailable, or a unit test) skips the rule
+    entirely rather than guessing — a check that cannot see the money must not judge it.
+    """
     bad = []
     if not isinstance(display, list):
         return ['payload has no display list']
@@ -202,13 +215,27 @@ def check_display(display, headers) -> list:
         media = float(match.group('media')) if match.group('media') else None
         if media is not None and media > invoice + 0.005:
             bad.append('media component $%.2f exceeds the invoice $%.2f' % (media, invoice))
-    for index, text in enumerate(display, 1):
-        if '$0.00' in text:
-            bad.append('string %d is $0.00 (a degraded render leaked to the skin): %r'
-                       % (index, text))
     for who, index in (('Nora', 6), ('ITGuy', 8)):
         if not AGENT_ROW_RE.match(display[index]):
             bad.append('%s 24h row does not show a billed figure: %r' % (who, display[index]))
+    # The zero rule. Only the fields the provider can corroborate are judged: the invoice
+    # against the account total, each agent row against its own partition. The media
+    # component is deliberately excluded — it is judged by the proportional drift check in
+    # main(), and a zero there is the normal state of a day with no image generation.
+    if provider:
+        account_today = provider['account']['today']
+        if invoice is not None and invoice == 0 and account_today > ZERO_EPSILON_USD:
+            bad.append('string 1 serves an invoice of $0.00 while the provider reports '
+                       '$%.6f for the same window (a degraded render reached the skin)'
+                       % account_today)
+        for who, index, agent in (('Nora', 6, 'nora'), ('ITGuy', 8, 'itguy')):
+            row = AGENT_ROW_RE.match(display[index])
+            if row and float(row.group('billed')) == 0:
+                partition = provider['parts'][agent]['last_24h']
+                if partition > ZERO_EPSILON_USD:
+                    bad.append('%s 24h row serves $0.00 while its partition for the same '
+                               'window is $%.6f (a degraded render reached the skin)'
+                               % (who, partition))
     footer = display[9]
     if 'EST. USD' in footer:
         bad.append('footer says EST. USD: no fresh provider-billed data is being served '
@@ -275,15 +302,20 @@ def run_suites() -> tuple:
             if proc.returncode != 0 or not proc.stdout:
                 return (['regression suites could not run: %s unreadable' % src], 'unavailable')
             Path(build, dest).write_text(proc.stdout, encoding='utf-8')
+        # test_watchdog.py imports the watchdog module itself, so the module under test has
+        # to travel with it: the suite must exercise THIS file, not whatever happens to be
+        # importable in the build dir.
+        Path(build, 'hum_integrity_watchdog.py').write_text(
+            Path(__file__).read_text(encoding='utf-8'), encoding='utf-8')
         # The suites themselves come from the durable deployments dir.
-        for name in ('test_billed.py', 'test_mediadup.py'):
+        for name in ('test_billed.py', 'test_mediadup.py', 'test_watchdog.py'):
             proc = sh('cat %s/%s' % (SUITES_DIR, name))
             if proc.returncode != 0 or not proc.stdout:
                 return (['regression suites could not run: %s/%s missing' % (SUITES_DIR, name)],
                         'unavailable')
             Path(build, name).write_text(proc.stdout, encoding='utf-8')
 
-        for name in ('test_mediadup.py', 'test_billed.py'):
+        for name in ('test_mediadup.py', 'test_billed.py', 'test_watchdog.py'):
             try:
                 proc = subprocess.run([sys.executable, name], cwd=build, capture_output=True,
                                       text=True, timeout=420)
@@ -324,18 +356,21 @@ def main() -> int:
     status, http, box = live_check()
     if status != 'ok':
         failures.append('payload fetch: %s' % status)
-    else:
-        payload = box.get('payload') or {}
-        display = payload.get('display')
-        headers = box.get('headers') or {}
-        failures.extend(check_display(display, headers))
-        detail.append(('served', (display or ['<none>'])[0]))
 
     totals = None
     try:
         totals = provider_totals()
     except Exception as exc:
         failures.append('provider re-derivation failed: %s' % type(exc).__name__)
+
+    # The display check runs AFTER the re-derivation because its zero rule compares each
+    # served $0.00 against the provider's figure for the same window (see check_display).
+    if status == 'ok':
+        payload = box.get('payload') or {}
+        display = payload.get('display')
+        headers = box.get('headers') or {}
+        failures.extend(check_display(display, headers, provider=totals))
+        detail.append(('served', (display or ['<none>'])[0]))
 
     # The provider's own figures are reported even when the payload fetch failed — on a
     # broken widget, "what the money actually is" is the useful half of the alert.
@@ -373,6 +408,11 @@ def main() -> int:
                 detail.append(('served vs provider',
                                '$%.2f vs $%.6f (lag $%.2f)'
                                % (invoice, account_today, account_today - invoice)))
+                if invoice == 0 and account_today <= ZERO_EPSILON_USD:
+                    detail.append(('zero invoice',
+                                   'served $0.00 and provider $%.6f — nothing billed in '
+                                   'this window yet (legitimate, not a degraded render)'
+                                   % account_today))
         if media is not None and totals['media_today'] is not None:
             drift = abs(media - totals['media_today'])
             # The served media figure is a Hermes list-price estimate while the provider
