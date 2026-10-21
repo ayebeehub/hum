@@ -40,6 +40,20 @@ def load(mod, path):
     return m
 
 
+def media_is_subset(media, account):
+    """`media` is a COMPONENT of the invoice: it must exist and must never exceed its parent.
+
+    Zero is legitimate — a day with no image generation reports $0.00, and requiring positivity
+    made this check fail every such day. That was the same "zero must mean broken" mistake the
+    watchdog's `'$0.00' in text` substring test made (history/2026-10-21-watchdog-zero-rule.md);
+    it is fixed here the same way: name what must actually hold rather than assert a sign.
+    A missing field is still a failure (a broken export is not a zero), and so is a bool.
+    """
+    if isinstance(media, bool) or not isinstance(media, (int, float)):
+        return False
+    return 0 <= media <= account
+
+
 # hum_merge does `from usage import IST`, so the NEW usage must own the name
 # `usage` in sys.modules before hum_merge is imported.
 usage_pre = load('usage_pre', os.path.join(BUILD, 'usage_pre.py'))
@@ -67,8 +81,17 @@ for w in ('today', 'last_24h'):
 
 media_today = (nora or {}).get('media_gen', {}).get('cost_today_usd')
 check('media today is a SUBSET of the account invoice (component, not an addend)',
-      media_today is not None and 0 < media_today <= acct_today,
+      media_is_subset(media_today, acct_today),
       'media=%s account=%.6f' % (media_today, acct_today))
+# The predicate's own fault cases, so "the live check passes" can never quietly mean
+# "the check stopped checking". These are the shapes that motivated it in the first place.
+check('predicate: a zero media day PASSES (no image generation today)',
+      media_is_subset(0.0, acct_today), 'media=0.0')
+check('predicate: a missing media field FAILS (a broken export is not a zero)',
+      not media_is_subset(None, acct_today), 'media=None')
+check('predicate: media above the invoice FAILS (the double-count shape)',
+      not media_is_subset(acct_today + 5.0, acct_today), 'media=account+5')
+check('predicate: a bool is not money', not media_is_subset(True, acct_today), 'media=True')
 
 # --- the actual render ------------------------------------------------------
 merged, _ = hum_merge.merge(data, nora, billed=billed)

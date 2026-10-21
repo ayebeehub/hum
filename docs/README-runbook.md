@@ -232,7 +232,7 @@ Telegram DM).
   residual must stay inside the tolerance the fetcher itself enforces. It does NOT import
   `usage.py`/`hum_merge.py` — an arithmetic bug in the widget cannot hide from it.
 - **Regression suites**: `/opt/itguy/deployments/hum/tests/` on the host (mirrored in the repo as
-  `tests/`) run against the live code on **Saturdays** — 19 + 36 + 12 checks.
+  `tests/`) run against the live code on **Saturdays** — 23 + 36 + 12 checks.
 
 **Why it exists:** the media double-count above was only ever caught by a human comparing the widget to
 the provider dashboard. Nothing automated compared those numbers, so this job does, daily.
@@ -317,3 +317,29 @@ independent faults in one line of `check_display`:
   class of reason — its check `0 < media_today <= acct_today` asserts media must be **positive**, so a
   day with no image generation fails it. Same bug, different file; not fixed here because it was not
   the approved change.
+
+## 2026-10-21 (later) — the same "zero means broken" bug in `test_mediadup.py`, closed
+
+The one open item above, fixed in the same shape as the watchdog: AB's plain *"Yes"*.
+
+`test_mediadup.py` asserted `media_today is not None and 0 < media_today <= acct_today` — the sign
+test (`0 <`) required media to be **positive**, so every day with no image generation failed a check
+about media *not exceeding* the invoice. It had been failing since at least the first `--with-suites`
+run of 2026-10-21 (`18 passed, 1 failed`), invisibly, because the suites only run on Saturdays.
+
+- **Fix:** the predicate is now a named function — `media_is_subset(media, account)`: the field must
+  exist, be a real number (not a bool), be `>= 0`, and stay `<= account`. Zero passes; a missing field
+  still fails (a broken export is not a zero), and media above the invoice still fails — the original
+  double-count shape.
+- **Four new checks** pin the predicate's own fault cases, so "the live check passes" can never
+  quietly mean "the check stopped checking": zero passes, `None` fails, above-invoice fails, bool
+  fails. Suite count 19 → **23 checks**.
+- **Verified:** `--always --with-suites` → `test_mediadup.py: 23 checks, 23 passed, 0 failed;
+  test_billed.py: 36 checks, 36 passed, 0 failed; test_watchdog.py: 12 checks, 12 passed, 0 failed`
+  (71 checks, 0 failures) on the live stack.
+- **Rollback:** `git revert` of the commit below; the pre-fix suite is `tests/test_mediadup.py` at
+  `a525b36`.
+
+**The pattern, twice in one day:** a check that asserts a *sign* ("must be positive", "must not contain
+`$0.00`") instead of the *property* it cares about ("must not exceed the parent", "must agree with the
+provider") fails on legitimate zeros and trains its reader to ignore it. Assert the property.
